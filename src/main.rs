@@ -1,5 +1,6 @@
 extern crate env_logger;
 
+use std::fmt::{Display, Formatter};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use inquire::{MultiSelect, Select, Text};
@@ -28,8 +29,8 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    DefineWord { word: String },
-    ProcessAll
+    ProcessWord { word: String },
+    ProcessAll { force: Option<bool> }
 }
 
 fn main() -> Result<()> {
@@ -38,19 +39,23 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     match &args.command {
-        Commands::DefineWord { word } => {
+        Commands::ProcessWord { word } => {
             debug!("Defining word: '{word}'");
-            let word = WordProcessor::new()?
-                .process_word(&word)?;
+
+            let mut word = Word::from_text(word);
+
+            WordProcessor::new()?
+                .process_word(&mut word)?;
 
             info!("Definition: {:?}", word);
         },
 
-        Commands::ProcessAll => {
+        Commands::ProcessAll { force } => {
             debug!("Processing all words");
 
             let word_processor = WordProcessor::new()?;
-            match word_processor.process() {
+
+            match word_processor.process(force.unwrap_or(false)) {
                 Ok(_) => debug!("Finished."),
                 Err(err) => error!("Global error: {}", err)
             }
@@ -77,24 +82,36 @@ impl WordProcessor {
         })
     }
 
-    pub fn process(&self) -> Result<()> {
+    pub fn process(&self, force: bool) -> Result<()> {
         let mut books = self.readwise.get_books()?;
         books.sort();
 
         let book = Self::select_book(books)?;
         let mut words = self.readwise.get_words(&book)?;
-
         let mut processed_words: Vec<Word> = Vec::new();
+
+        if !force {
+            let mut cached_translations = db::get_words(&book)?;
+
+            let words_count = words.len();
+            words = words.into_iter()
+                .filter(|word| !cached_translations.iter().any(|cached_word| cached_word.original_text == word.original_text))
+                .collect();
+
+            processed_words.append(& mut cached_translations);
+
+            info!("{} are already processed, processing {} others", words_count - words.len() ,words.len());
+        }
 
         let mut count = 0;
         while !words.is_empty() {
-            let mut failed_words: Vec<String> = Vec::new();
+            let mut failed_words: Vec<Word> = Vec::new();
 
-            for word in words {
-                let processed_word = self.process_word(&word);
+            for mut word in words {
+                let processed_word = self.process_word(&mut word);
 
                 match processed_word {
-                    Ok(processed_word) => processed_words.push(processed_word),
+                    Ok(()) => processed_words.push(word),
                     Err(err) => {
                         error!("Failed to process '{word}': {err}");
                         failed_words.push(word);
@@ -120,18 +137,18 @@ impl WordProcessor {
         Ok(())
     }
 
-    pub fn process_word(&self, word: &str) -> Result<Word> {
-        let word_stem = self.oxford_dict.word_stem(word)
-            .unwrap_or(word.to_string());
+    pub fn process_word(&self, word: &mut Word) -> Result<()> {
+        let word_stem = self.oxford_dict.word_stem(&word.text)
+            .unwrap_or(word.text.to_owned());
 
         let translation = self.google_translate.translate(&word_stem)?;
         let (word_id, definitions) = self.oxford_dict.definitions(&word_stem)?;
 
-        Ok(Word {
-            text: word_id,
-            translation: Some(translation),
-            definitions_entries: Some(definitions),
-        })
+        word.text = word_id;
+        word.translation = Some(translation);
+        word.definitions_entries = Some(definitions);
+
+        Ok(())
     }
 
     fn select_book(books: Vec<Book>) -> Result<Book> {
@@ -140,17 +157,25 @@ impl WordProcessor {
             .prompt()?)
     }
 
-    fn redact_words(words: Vec<String>) -> Result<Vec<String>> {
+    fn redact_words(words: Vec<Word>) -> Result<Vec<Word>> {
+        impl Display for Word {
+            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}", self.text)
+            }
+        }
+
         let words_to_redact = MultiSelect::new("Select words to redact: ", words)
             .prompt()?;
 
         let mut new_words = Vec::new();
-        for word in words_to_redact {
-            let redacted_word = Text::new("Redact: ")
-                .with_initial_value(&word)
+        for mut word in words_to_redact {
+            let redacted_text = Text::new("Redact: ")
+                .with_initial_value(&word.text)
                 .prompt()?;
 
-            new_words.push(redacted_word);
+            word.text = redacted_text;
+
+            new_words.push(word);
         }
 
         Ok(new_words)

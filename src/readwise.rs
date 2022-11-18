@@ -8,6 +8,7 @@ use reqwest::{header, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use crate::{model, util};
+use crate::model::Word;
 
 pub struct ReadwiseClient {
     http: reqwest::blocking::Client,
@@ -66,7 +67,7 @@ impl ReadwiseClient {
             .with_context(|| "Failed to load JSON config for 'readwise'")
     }
 
-    pub fn get_words(&self, book: &model::Book) -> Result<Vec<String>> {
+    pub fn get_words(&self, book: &model::Book) -> Result<Vec<Word>> {
         let pink_tag =
             |highlight: &BookHighlight| highlight.tags.iter().any(|tag| tag.name == "pink");
 
@@ -77,6 +78,12 @@ impl ReadwiseClient {
             .map(|highlight| highlight.text)
             .map(|word| ReadwiseClient::transform_word(&word))
             .unique()
+            .map(|text| Word {
+                text: text.to_owned(),
+                original_text: text.to_owned(),
+                translation: None,
+                definitions_entries: None
+            })
             .collect())
     }
 

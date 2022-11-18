@@ -60,8 +60,20 @@ impl Ord for Book {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Word {
     pub text: String,
+    pub original_text: String,
     pub translation: Option<String>,
     pub definitions_entries: Option<Vec<DefinitionsEntry>>
+}
+
+impl Word {
+    pub fn from_text(text: &str) -> Word {
+        Word {
+            text: text.to_owned(),
+            original_text: text.to_owned(),
+            translation: None,
+            definitions_entries: None
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

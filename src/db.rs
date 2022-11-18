@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
-use crate::model::Word;
+use crate::model::{Book, Word};
 use anyhow::{Context, Result};
 use regex::Regex;
 
@@ -29,8 +29,8 @@ pub fn save_words(book_name: &str, words: &Vec<Word>) -> Result<()> {
     Ok(())
 }
 
-pub fn get_words(book_name: &str) -> Result<Vec<Word>> {
-    let filename = get_filename(book_name);
+pub fn get_words(book: &Book) -> Result<Vec<Word>> {
+    let filename = get_filename(&book.title);
     let mut file = fs::File::open(filename)?;
 
     let mut buf = String::new();
