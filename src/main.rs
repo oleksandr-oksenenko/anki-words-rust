@@ -1,6 +1,7 @@
 extern crate env_logger;
 
 use anyhow::Result;
+use clap::{Parser, Subcommand};
 use inquire::{MultiSelect, Select, Text};
 
 use crate::anki_connect::AnkiConnectClient;
@@ -18,11 +19,37 @@ mod oxford_dict;
 mod readwise;
 mod util;
 
+#[derive(Parser, Debug)]
+struct Args {
+    #[command(subcommand)]
+    command: Commands
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    DefineWord { word: String },
+    ProcessAll
+}
+
 fn main() -> Result<()> {
-    let word_processor = WordProcessor::new()?;
-    match word_processor.process() {
-        Ok(_) => println!("Finished."),
-        Err(err) => println!("Global error: {}", err)
+    let args = Args::parse();
+
+    match &args.command {
+        Commands::DefineWord { word } => {
+            println!("Defining word '{word}'");
+            let word_processor = WordProcessor::new()?;
+            println!("{:?}", word_processor.process_word(&word));
+        },
+
+        Commands::ProcessAll => {
+            println!("Processing all");
+
+            let word_processor = WordProcessor::new()?;
+            match word_processor.process() {
+                Ok(_) => println!("Finished."),
+                Err(err) => println!("Global error: {}", err)
+            }
+        }
     }
 
     Ok(())
@@ -88,7 +115,7 @@ impl WordProcessor {
         Ok(())
     }
 
-    fn process_word(&self, word: &str) -> Result<Word> {
+    pub fn process_word(&self, word: &str) -> Result<Word> {
         let word_stem = self.oxford_dict.word_stem(word)
             .unwrap_or(word.to_string());
 

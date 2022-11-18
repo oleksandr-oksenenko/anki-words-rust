@@ -9,8 +9,6 @@ pub fn load_json_config<T: DeserializeOwned>(file_id: &str) -> Result<T> {
 
     let file_path = project_dirs.config_dir().join(file_id);
 
-    println!("Trying to load JSON config from '{}'", file_path.display());
-
     let mut file = fs::File::open(file_path)?;
 
     let mut buf = String::new();
