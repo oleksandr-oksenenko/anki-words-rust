@@ -48,12 +48,12 @@ impl AnkiConnectClient {
             p { (word.translation.as_ref().unwrap()) }
 
             ol type="I" {
-                @for definition_entry in word.definitions_entries.as_ref().unwrap() {
+                @for (category, definitions) in word.definitions.as_ref().unwrap() {
                     li {
-                        p { (definition_entry.category) }
+                        p { (category) }
 
                         ol type="1" {
-                            @for definition in &definition_entry.definitions {
+                            @for definition in definitions {
                                 li {
                                     p { (definition.definition.as_ref().unwrap()) }
 

@@ -143,11 +143,11 @@ impl WordProcessor {
             .unwrap_or(word.text.to_owned());
 
         let translation = self.google_translate.translate(&word_stem)?;
-        let (word_id, definitions) = self.oxford_dict.definitions(&word_stem)?;
+        let defined_word = self.oxford_dict.definitions(&word_stem)?;
 
-        word.text = word_id;
+        word.text = defined_word.text;
         word.translation = Some(translation);
-        word.definitions_entries = Some(definitions);
+        word.definitions = defined_word.definitions;
 
         Ok(())
     }

@@ -1,4 +1,5 @@
 use std::{thread, time};
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -10,7 +11,7 @@ use reqwest::header::HeaderValue;
 use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
 
-use crate::model::{Definition, DefinitionCategory, DefinitionsEntry};
+use crate::model::{Definition, DefinitionCategory, DefinitionsEntry, Word};
 use crate::util;
 
 pub struct OxfordDictClient {
@@ -146,21 +147,38 @@ impl OxfordDictClient {
         self.lemmas(word)
     }
 
-    pub fn definitions(&self, word_stem: &str) -> Result<(String, Vec<DefinitionsEntry>)> {
+    pub fn definitions(&self, word_stem: &str) -> Result<Word> {
         let en_us_entries = self.entries(word_stem, "en-us");
 
         if en_us_entries.is_ok() {
-            return en_us_entries;
+            return en_us_entries.map(|e| self.process_entries(e));
         }
 
         let en_gb_entries = self.entries(word_stem, "en-gb");
         if en_gb_entries.is_ok() {
-            return en_gb_entries;
+            return en_gb_entries.map(|e| self.process_entries(e));
         }
 
         let errors = vec![en_us_entries.err().unwrap(), en_gb_entries.err().unwrap()];
 
         return Err(OxfordClientError::CompositeError(errors))?;
+    }
+
+    fn process_entries(&self, entries: (String, Vec<DefinitionsEntry>)) -> Word {
+        let mut definitions = HashMap::new();
+
+        entries.1.into_iter()
+            .map(|def_entry| (def_entry.category, def_entry.definitions))
+            .for_each(|(key, ref mut val)| {
+                definitions.entry(key).or_insert_with(Vec::new).append(val);
+            });
+
+        Word {
+            text: entries.0.to_owned(),
+            original_text: entries.0,
+            translation: None,
+            definitions: Some(definitions),
+        }
     }
 
     fn entries(&self, word_id: &str, lang: &str) -> Result<(String, Vec<DefinitionsEntry>)> {

@@ -78,12 +78,7 @@ impl ReadwiseClient {
             .map(|highlight| highlight.text)
             .map(|word| ReadwiseClient::transform_word(&word))
             .unique()
-            .map(|text| Word {
-                text: text.to_owned(),
-                original_text: text.to_owned(),
-                translation: None,
-                definitions_entries: None
-            })
+            .map(|text| Word::from_text(&text))
             .collect())
     }
 

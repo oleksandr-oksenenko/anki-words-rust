@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fmt::Display;
 use serde::{Serialize, Deserialize};
 use strum::{Display, EnumString};
@@ -56,13 +57,14 @@ impl Ord for Book {
     }
 }
 
+pub type Definitions = HashMap<DefinitionCategory, Vec<Definition>>;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Word {
     pub text: String,
     pub original_text: String,
     pub translation: Option<String>,
-    pub definitions_entries: Option<Vec<DefinitionsEntry>>
+    pub definitions: Option<Definitions>
 }
 
 impl Word {
@@ -71,7 +73,7 @@ impl Word {
             text: text.to_owned(),
             original_text: text.to_owned(),
             translation: None,
-            definitions_entries: None
+            definitions: None
         }
     }
 }
@@ -88,7 +90,7 @@ pub struct Definition {
     pub examples: Vec<String>
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(EnumString, Display)]
 #[strum(serialize_all = "snake_case")]
