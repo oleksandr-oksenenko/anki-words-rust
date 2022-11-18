@@ -85,7 +85,8 @@ pub enum DefinitionCategory {
     Verb,
     Adjective,
     Adverb,
-    Preposition
+    Preposition,
+    Interjection
 }
 
 impl Render for DefinitionCategory {
