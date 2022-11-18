@@ -99,7 +99,8 @@ pub enum DefinitionCategory {
     Adverb,
     Preposition,
     Interjection,
-    Idiomatic
+    Idiomatic,
+    Pronoun
 }
 
 impl Render for DefinitionCategory {
