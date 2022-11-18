@@ -4,7 +4,7 @@ use std::str::FromStr;
 use anyhow::{anyhow, bail, Context, Result};
 use itertools::Either::{Left, Right};
 use itertools::Itertools;
-use log::{debug, error, info, warn};
+use log::{info, warn};
 use reqwest::{header, StatusCode};
 use reqwest::header::HeaderValue;
 use serde::{Deserialize, Serialize};
@@ -147,27 +147,27 @@ impl OxfordDictClient {
     }
 
     pub fn definitions(&self, word_stem: &str) -> Result<(String, Vec<DefinitionsEntry>)> {
-        match self.entries(word_stem, "en-us") {
-            Ok((word_id, entries)) => return Ok((word_id.to_string(), entries)),
-            Err(err) => {
-                error!("Failed to get entries for '{word_stem}' in 'en-us' dict: {err}");
-            }
-        };
+        let en_us_entries = self.entries(word_stem, "en-us");
 
-        return match self.entries(word_stem, "en-gb") {
-            Ok((word_id, entries)) => Ok((word_id.to_string(), entries)),
-            Err(err) => {
-                error!("Failed to get entries for '{word_stem}' in 'en-gb' dict: {err}");
-                Err(anyhow!("Failed to get entries for '{word_stem}'"))
-            }
-        };
+        if en_us_entries.is_ok() {
+            return en_us_entries;
+        }
+
+        let en_gb_entries = self.entries(word_stem, "en-gb");
+        if en_gb_entries.is_ok() {
+            return en_gb_entries;
+        }
+
+        let errors = vec![en_us_entries.err().unwrap(), en_gb_entries.err().unwrap()];
+
+        return Err(OxfordClientError::CompositeError(errors))?;
     }
 
     fn entries(&self, word_id: &str, lang: &str) -> Result<(String, Vec<DefinitionsEntry>)> {
         let response: EntriesResponse = self.make_request(&format!("/entries/{lang}/{word_id}"))?;
 
         if response.results.is_none() {
-            bail!("Entries results array is empty, bailing early");
+            bail!("Entries results array is empty");
         }
 
         let (successes, failures): (Vec<_>, Vec<_>) = response.results.unwrap().into_iter()
@@ -192,7 +192,7 @@ impl OxfordDictClient {
             }
             Ok((word_id.to_owned(), results))
         } else if !other_sources.is_empty() {
-            //TODO: handle multiple other sources
+            //TODO: handle multiple other sources?
             let source = other_sources.first().unwrap();
             info!("Failed to get definition for '{word_id}', getting it from other source: '{source}'");
             self.entries(source, lang)
@@ -313,7 +313,7 @@ impl OxfordDictClient {
                     .get("Retry-After").ok_or_else(|| anyhow!("Failed to get Retry-After header"))?
                     .to_str()?
                     .parse::<u64>()?;
-                debug!("Waiting {} seconds", retry_after);
+                info!("Waiting {} seconds...", retry_after);
                 thread::sleep(time::Duration::from_secs(retry_after));
             }
         }

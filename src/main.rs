@@ -3,6 +3,7 @@ extern crate env_logger;
 use std::fmt::{Display, Formatter};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use env_logger::Env;
 use inquire::{MultiSelect, Select, Text};
 use log::{debug, error, info};
 
@@ -34,7 +35,7 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    env_logger::init();
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
     let args = Args::parse();
 
