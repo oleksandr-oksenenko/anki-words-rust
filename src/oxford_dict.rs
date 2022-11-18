@@ -28,9 +28,9 @@ impl std::fmt::Display for OxfordClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OxfordClientError::CompositeError(errors) => {
-                for error in errors {
-                    write!(f, "{error}\n")?;
-                }
+                let error_str = errors.iter().join("\n");
+
+                write!(f, "{error_str}")?;
             }
         }
 
