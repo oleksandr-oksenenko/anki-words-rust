@@ -3,6 +3,7 @@ extern crate env_logger;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use inquire::{MultiSelect, Select, Text};
+use log::{debug, error, info};
 
 use crate::anki_connect::AnkiConnectClient;
 use crate::google_translate::GoogleTranslate;
@@ -32,22 +33,26 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    env_logger::init();
+
     let args = Args::parse();
 
     match &args.command {
         Commands::DefineWord { word } => {
-            println!("Defining word '{word}'");
-            let word_processor = WordProcessor::new()?;
-            println!("{:?}", word_processor.process_word(&word));
+            debug!("Defining word: '{word}'");
+            let word = WordProcessor::new()?
+                .process_word(&word)?;
+
+            info!("Definition: {:?}", word);
         },
 
         Commands::ProcessAll => {
-            println!("Processing all");
+            debug!("Processing all words");
 
             let word_processor = WordProcessor::new()?;
             match word_processor.process() {
-                Ok(_) => println!("Finished."),
-                Err(err) => println!("Global error: {}", err)
+                Ok(_) => debug!("Finished."),
+                Err(err) => error!("Global error: {}", err)
             }
         }
     }
@@ -91,12 +96,12 @@ impl WordProcessor {
                 match processed_word {
                     Ok(processed_word) => processed_words.push(processed_word),
                     Err(err) => {
-                        eprintln!("Failed to process '{word}': {err}");
+                        error!("Failed to process '{word}': {err}");
                         failed_words.push(word);
                     }
                 }
                 if count % 10 == 0 {
-                    println!("Processed {count} words");
+                    debug!("Processed {count} words");
                 }
                 count += 1;
             }

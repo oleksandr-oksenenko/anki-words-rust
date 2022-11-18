@@ -4,6 +4,7 @@ use std::str::FromStr;
 use anyhow::{anyhow, bail, Context, Result};
 use itertools::Either::{Left, Right};
 use itertools::Itertools;
+use log::{debug, error, info, warn};
 use reqwest::{header, StatusCode};
 use reqwest::header::HeaderValue;
 use serde::{Deserialize, Serialize};
@@ -28,7 +29,7 @@ impl std::fmt::Display for OxfordClientError {
         match self {
             OxfordClientError::CompositeError(errors) => {
                 for error in errors {
-                    write!(f, "CompositeError, errors: {error}\n")?;
+                    write!(f, "{error}\n")?;
                 }
             }
         }
@@ -149,14 +150,14 @@ impl OxfordDictClient {
         match self.entries(word_stem, "en-us") {
             Ok((word_id, entries)) => return Ok((word_id.to_string(), entries)),
             Err(err) => {
-                eprintln!("Failed to get entries for '{word_stem}' in 'en-us' dict: {err}");
+                error!("Failed to get entries for '{word_stem}' in 'en-us' dict: {err}");
             }
         };
 
         return match self.entries(word_stem, "en-gb") {
             Ok((word_id, entries)) => Ok((word_id.to_string(), entries)),
             Err(err) => {
-                eprintln!("Failed to get entries for '{word_stem}' in 'en-gb' dict: {err}");
+                error!("Failed to get entries for '{word_stem}' in 'en-gb' dict: {err}");
                 Err(anyhow!("Failed to get entries for '{word_stem}'"))
             }
         };
@@ -187,13 +188,13 @@ impl OxfordDictClient {
 
         return if !results.is_empty() {
             if !other_sources.is_empty() {
-                println!("WARN: other sources are not empty for '{word_id}': {:?}", other_sources)
+                warn!("other sources are not empty for '{word_id}': {:?}", other_sources)
             }
             Ok((word_id.to_owned(), results))
         } else if !other_sources.is_empty() {
             //TODO: handle multiple other sources
             let source = other_sources.first().unwrap();
-            println!("Failed to get definition for '{word_id}', getting it from other source: '{source}'");
+            info!("Failed to get definition for '{word_id}', getting it from other source: '{source}'");
             self.entries(source, lang)
         } else {
             Err(anyhow!("Definition entries and other sources are empty for '{word_id}'"))
@@ -224,7 +225,7 @@ impl OxfordDictClient {
 
         return if !definitions.is_empty() {
             if !other_sources.is_empty() {
-                println!("WARN: other sources are not empty for {word_id}: {:?}", other_sources);
+                warn!("other sources are not empty for {word_id}: {:?}", other_sources);
             }
             Ok(MappingResult::Result(DefinitionsEntry { definitions, category }))
         } else if !other_sources.is_empty() || !derivative_of.is_empty() {
@@ -312,7 +313,7 @@ impl OxfordDictClient {
                     .get("Retry-After").ok_or_else(|| anyhow!("Failed to get Retry-After header"))?
                     .to_str()?
                     .parse::<u64>()?;
-                println!("Waiting {} seconds", retry_after);
+                debug!("Waiting {} seconds", retry_after);
                 thread::sleep(time::Duration::from_secs(retry_after));
             }
         }
