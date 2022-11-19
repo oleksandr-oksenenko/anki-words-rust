@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::fmt::Display;
+use std::fmt::{Display, Formatter, write};
 use serde::{Serialize, Deserialize};
 use strum::{Display, EnumString};
 use std::string::ToString;
@@ -10,8 +10,7 @@ use maud::Render;
 pub struct Book {
     pub id: u64,
     pub title: String,
-    pub author: Option<String>,
-    pub words: Vec<Word>
+    pub author: Option<String>
 }
 
 impl Display for Book {
@@ -78,6 +77,12 @@ impl Word {
     }
 }
 
+impl Display for Word {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.text)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DefinitionsEntry {
     pub definitions: Vec<Definition>,
@@ -102,7 +107,8 @@ pub enum DefinitionCategory {
     Preposition,
     Interjection,
     Idiomatic,
-    Pronoun
+    Pronoun,
+    Residual
 }
 
 impl Render for DefinitionCategory {

@@ -1,11 +1,14 @@
+use anyhow::{anyhow, bail, Result};
+use futures::future::try_join_all;
+use log::info;
+use maud::html;
 use reqwest::header::{self, HeaderValue};
 use serde_json::{json, Value};
-use anyhow::{anyhow, bail, Result};
-use maud::html;
+
 use crate::model::{Book, Word};
 
 pub struct AnkiConnectClient {
-    http: reqwest::blocking::Client
+    http: reqwest::Client,
 }
 
 const ENDPOINT_URL: &str = "http://localhost:8765";
@@ -14,9 +17,9 @@ impl AnkiConnectClient {
     pub fn new() -> Result<AnkiConnectClient> {
         let mut default_headers = header::HeaderMap::new();
         default_headers.insert("Accept", HeaderValue::from_str("application/json")?);
-        default_headers.insert( "Content-Type", HeaderValue::from_str("application/json")?);
+        default_headers.insert("Content-Type", HeaderValue::from_str("application/json")?);
 
-        let http = reqwest::blocking::Client::builder()
+        let http = reqwest::Client::builder()
             .default_headers(default_headers)
             .connection_verbose(true)
             .build()?;
@@ -24,21 +27,24 @@ impl AnkiConnectClient {
         Ok(AnkiConnectClient { http })
     }
 
-    pub fn store_book(&self, book: &Book, words: &Vec<Word>) -> Result<()> {
-        self.create_deck_if_not_exists(&book.title)?;
+    pub async fn store_book(&self, book: &Book, words: &Vec<Word>, force: bool) -> Result<()> {
+        if force {
+            self.delete_deck(&book.title).await?;
+        }
+
+        self.create_deck_if_not_exists(&book.title).await?;
 
         for word in words {
-            self.add_word(&book.title, word)?;
+            self.add_word(&book.title, word).await?
         }
 
         Ok(())
     }
 
-    fn add_word(&self, deck_name: &str, word: &Word) -> Result<()> {
+    async fn add_word(&self, deck_name: &str, word: &Word) -> Result<()> {
         let html = Self::generate_back_text_html(word)?;
 
-        self.create_deck_if_not_exists(deck_name)?;
-        self.add_note(deck_name, &word.text, &html)?;
+        self.add_note(deck_name, &word.text, &html).await?;
 
         Ok(())
     }
@@ -73,7 +79,7 @@ impl AnkiConnectClient {
         Ok(back_text)
     }
 
-    fn add_note(&self, deck_name: &str, front_text: &str, back_text: &str) -> Result<()> {
+    async fn add_note(&self, deck_name: &str, front_text: &str, back_text: &str) -> Result<()> {
         let request = json!({
             "version": 6,
             "action": "addNote",
@@ -96,36 +102,27 @@ impl AnkiConnectClient {
             }
         });
 
-        let response = self.http.post(ENDPOINT_URL)
-            .body(request.to_string())
-            .send()?;
-
-        if !response.status().is_success() {
-            bail!("Failed to add note to Anki");
-        }
+        self.make_request(request).await?;
 
         Ok(())
     }
 
-    fn create_deck_if_not_exists(&self, deck_name: &str) -> Result<()> {
-        let existing_decks = self.get_decks()?;
+    async fn create_deck_if_not_exists(&self, deck_name: &str) -> Result<()> {
+        let existing_decks = self.get_decks().await?;
 
         if !existing_decks.iter().any(|s| s == deck_name) {
-            self.create_deck(deck_name)?;
+            self.create_deck(deck_name).await?;
         }
 
         Ok(())
     }
 
-    fn get_decks(&self) -> Result<Vec<String>> {
+    async fn get_decks(&self) -> Result<Vec<String>> {
         let request = json!({
             "version": 6,
             "action": "deckNames"
         });
-        let text = self.http.post(ENDPOINT_URL)
-            .body(request.to_string())
-            .send()?
-            .text()?;
+        let text = self.make_request(request).await?;
 
         let response: Value = serde_json::from_str(&text).unwrap();
         let results = response.as_object().ok_or(anyhow!("Failed to map response to object"))?
@@ -136,7 +133,8 @@ impl AnkiConnectClient {
         let mut decks = Vec::new();
         for value in results {
             decks.push(
-                value.as_str().ok_or(anyhow!("Failed to map 'result' array value to string"))?
+                value.as_str()
+                    .ok_or(anyhow!("Failed to map 'result' array value to string"))?
                     .to_string()
             );
         }
@@ -144,7 +142,7 @@ impl AnkiConnectClient {
         Ok(decks)
     }
 
-    fn create_deck(&self, deck_name: &str) -> Result<()> {
+    async fn create_deck(&self, deck_name: &str) -> Result<()> {
         let request = json!({
             "version": 6,
             "action": "createDeck",
@@ -153,14 +151,35 @@ impl AnkiConnectClient {
             }
         });
 
-        let response = self.http.post(ENDPOINT_URL)
-            .body(request.to_string())
-            .send()?;
-
-        if !response.status().is_success() {
-            bail!("Failed to create Anki deck");
-        }
+        self.make_request(request).await?;
 
         Ok(())
+    }
+
+    async fn delete_deck(&self, deck_name: &str) -> Result<()> {
+        let request = json!({
+            "version": 6,
+            "action": "deleteDecks",
+            "params": {
+                "decks": [deck_name],
+                "cardsToo": true
+            }
+        });
+
+        self.make_request(request).await?;
+
+        Ok(())
+    }
+
+    async fn make_request(&self, request: Value) -> Result<String> {
+        let response = self.http.post(ENDPOINT_URL)
+            .body(request.to_string())
+            .send().await?;
+
+        if !response.status().is_success() {
+            bail!("Request to Anki failed");
+        }
+
+        Ok(response.text().await?)
     }
 }

@@ -2,6 +2,8 @@ use std::{thread, time};
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use futures::future::{BoxFuture, FutureExt};
+
 use anyhow::{anyhow, bail, Context, Result};
 use itertools::Either::{Left, Right};
 use itertools::Itertools;
@@ -15,7 +17,7 @@ use crate::model::{Definition, DefinitionCategory, DefinitionsEntry, Word};
 use crate::util;
 
 pub struct OxfordDictClient {
-    http: reqwest::blocking::Client,
+    http: reqwest::Client,
 }
 
 #[derive(Debug)]
@@ -121,8 +123,8 @@ struct Credentials {
 }
 
 impl OxfordDictClient {
-    pub fn new() -> Result<OxfordDictClient> {
-        let creds = Self::load_creds()?;
+    pub async fn new() -> Result<OxfordDictClient> {
+        let creds = Self::load_creds().await?;
 
         let mut default_headers = header::HeaderMap::new();
         default_headers.insert("Accept", HeaderValue::from_str("application/json")?);
@@ -130,7 +132,7 @@ impl OxfordDictClient {
         default_headers.insert("App-Id", HeaderValue::from_str(&creds.app_id)?);
         default_headers.insert("App-Key", HeaderValue::from_str(&creds.app_key)?);
 
-        let http = reqwest::blocking::Client::builder()
+        let http = reqwest::Client::builder()
             .default_headers(default_headers)
             .connection_verbose(true)
             .build()?;
@@ -138,23 +140,23 @@ impl OxfordDictClient {
         Ok(OxfordDictClient { http })
     }
 
-    fn load_creds() -> Result<Credentials> {
-        util::load_json_config("oxford_dict")
+    async fn load_creds() -> Result<Credentials> {
+        util::load_json_config("oxford_dict").await
             .with_context(|| format!("Failed to get credentials for oxford dict client"))
     }
 
-    pub fn word_stem(&self, word: &str) -> Result<String> {
-        self.lemmas(word)
+    pub async fn word_stem(&self, word: &str) -> Result<String> {
+        self.lemmas(word).await
     }
 
-    pub fn definitions(&self, word_stem: &str) -> Result<Word> {
-        let en_us_entries = self.entries(word_stem, "en-us");
+    pub async fn definitions(&self, word_stem: &str) -> Result<Word> {
+        let en_us_entries = self.entries(word_stem, "en-us").await;
 
         if en_us_entries.is_ok() {
             return en_us_entries.map(|e| self.process_entries(e));
         }
 
-        let en_gb_entries = self.entries(word_stem, "en-gb");
+        let en_gb_entries = self.entries(word_stem, "en-gb").await;
         if en_gb_entries.is_ok() {
             return en_gb_entries.map(|e| self.process_entries(e));
         }
@@ -181,42 +183,44 @@ impl OxfordDictClient {
         }
     }
 
-    fn entries(&self, word_id: &str, lang: &str) -> Result<(String, Vec<DefinitionsEntry>)> {
-        let response: EntriesResponse = self.make_request(&format!("/entries/{lang}/{word_id}"))?;
+    fn entries<'a>(&'a self, word_id: &'a str, lang: &'a str) -> BoxFuture<Result<(String, Vec<DefinitionsEntry>)>> {
+        async move {
+            let response: EntriesResponse = self.make_request(&format!("/entries/{lang}/{word_id}")).await?;
 
-        if response.results.is_none() {
-            bail!("Entries results array is empty");
-        }
-
-        let (successes, failures): (Vec<_>, Vec<_>) = response.results.unwrap().into_iter()
-            .flat_map(|result| result.lexical_entries)
-            .map(|lexical_entry| OxfordDictClient::map_lexical_entry(word_id, lexical_entry))
-            .partition_result();
-
-        if !failures.is_empty() {
-            return Err(OxfordClientError::CompositeError(failures))?;
-        }
-
-        let (results, other_sources): (Vec<_>, Vec<_>) = successes.into_iter()
-            .partition_map(|mapping_result| match mapping_result {
-                MappingResult::Result(r) => Left(r),
-                MappingResult::OtherSources(os) => Right(os)
-            });
-        let other_sources: Vec<String> = other_sources.into_iter().flatten().collect();
-
-        return if !results.is_empty() {
-            if !other_sources.is_empty() {
-                warn!("other sources are not empty for '{word_id}': {:?}", other_sources)
+            if response.results.is_none() {
+                bail!("Entries results array is empty");
             }
-            Ok((word_id.to_owned(), results))
-        } else if !other_sources.is_empty() {
-            //TODO: handle multiple other sources?
-            let source = other_sources.first().unwrap();
-            info!("Failed to get definition for '{word_id}', getting it from other source: '{source}'");
-            self.entries(source, lang)
-        } else {
-            Err(anyhow!("Definition entries and other sources are empty for '{word_id}'"))
-        };
+
+            let (successes, failures): (Vec<_>, Vec<_>) = response.results.unwrap().into_iter()
+                .flat_map(|result| result.lexical_entries)
+                .map(|lexical_entry| OxfordDictClient::map_lexical_entry(word_id, lexical_entry))
+                .partition_result();
+
+            if !failures.is_empty() {
+                return Err(OxfordClientError::CompositeError(failures))?;
+            }
+
+            let (results, other_sources): (Vec<_>, Vec<_>) = successes.into_iter()
+                .partition_map(|mapping_result| match mapping_result {
+                    MappingResult::Result(r) => Left(r),
+                    MappingResult::OtherSources(os) => Right(os)
+                });
+            let other_sources: Vec<String> = other_sources.into_iter().flatten().collect();
+
+            return if !results.is_empty() {
+                if !other_sources.is_empty() {
+                    warn!("other sources are not empty for '{word_id}': {:?}", other_sources)
+                }
+                Ok((word_id.to_owned(), results))
+            } else if !other_sources.is_empty() {
+                //TODO: handle multiple other sources?
+                let source = other_sources.first().unwrap();
+                info!("Failed to get definition for '{word_id}', getting it from other source: '{source}'");
+                self.entries(source, lang).await
+            } else {
+                Err(anyhow!("Definition entries and other sources are empty for '{word_id}'"))
+            };
+        }.boxed()
     }
 
     fn map_lexical_entry(word_id: &str, lexical_entry: EntriesLexicalEntry) -> Result<MappingResult<DefinitionsEntry>> {
@@ -290,8 +294,8 @@ impl OxfordDictClient {
         };
     }
 
-    fn lemmas(&self, word: &str) -> Result<String> {
-        let response: LemmasResponse = self.make_request(&format!("/lemmas/en/{word}"))?;
+    async fn lemmas(&self, word: &str) -> Result<String> {
+        let response: LemmasResponse = self.make_request(&format!("/lemmas/en/{word}")).await?;
 
         if response.results.is_none() {
             bail!("Lemmas results array is empty, bailing early")
@@ -318,12 +322,14 @@ impl OxfordDictClient {
         }
     }
 
-    fn make_request<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+    async fn make_request<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         for _ in 1..3 {
-            let response = self.http.get(&format!("{URL}{path}")).send()?;
+            let url = format!("{URL}{path}");
+            info!("Requesting {url}");
+            let response = self.http.get(&url).send().await?;
 
             if response.status() != StatusCode::TOO_MANY_REQUESTS {
-                let result = response.json::<T>()?;
+                let result = response.json::<T>().await?;
                 return Ok(result);
             } else {
                 let retry_after: u64 = response
@@ -332,7 +338,7 @@ impl OxfordDictClient {
                     .to_str()?
                     .parse::<u64>()?;
                 info!("Waiting {} seconds...", retry_after);
-                thread::sleep(time::Duration::from_secs(retry_after));
+                tokio::time::sleep(time::Duration::from_secs(retry_after)).await;
             }
         }
         bail!("Failed to get response from Oxford dict in time");

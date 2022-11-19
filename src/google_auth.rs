@@ -1,12 +1,11 @@
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
-
-use chrono::offset::Utc;
-use chrono::DateTime;
-
 use anyhow::{Context, Result};
+use chrono::DateTime;
+use chrono::offset::Utc;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+
 use crate::util;
 
 const AUTH_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
@@ -51,17 +50,17 @@ struct AuthResponse {
 }
 
 pub struct TokenManager {
-    http: reqwest::blocking::Client,
+    http: reqwest::Client,
     scopes: String,
     creds: ApplicationCredentials,
     current_token: Option<Token>,
 }
 
 impl TokenManager {
-    pub fn new(scopes: &[&str]) -> Result<TokenManager> {
-        let creds = TokenManager::load_creds()?;
+    pub async fn new(scopes: &[&str]) -> Result<TokenManager> {
+        let creds = TokenManager::load_creds().await?;
 
-        let http = reqwest::blocking::Client::builder()
+        let http = reqwest::Client::builder()
             .connection_verbose(true)
             .build()?;
 
@@ -73,12 +72,12 @@ impl TokenManager {
         })
     }
 
-    fn load_creds() -> Result<ApplicationCredentials> {
-        util::load_json_config("google_translate")
+    async fn load_creds() -> Result<ApplicationCredentials> {
+        util::load_json_config("google_translate").await
             .with_context(|| "Failed to load JSON config for 'google-translate'")
     }
 
-    pub fn token(&mut self) -> Result<String> {
+    pub async fn token(&mut self) -> Result<String> {
         let hour = chrono::Duration::minutes(45);
         let current_time = Utc::now();
 
@@ -108,8 +107,10 @@ impl TokenManager {
                 let response: AuthResponse = self.http.post(AUTH_ENDPOINT)
                     .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                     .body(form)
-                    .send()?
-                    .json()?;
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
 
                 let value = TokenValue::Bearer(response.access_token);
                 let token = value.to_string();

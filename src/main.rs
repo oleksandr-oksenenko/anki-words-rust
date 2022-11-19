@@ -1,10 +1,13 @@
-extern crate env_logger;
-
+use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use env_logger::Env;
+use futures::try_join;
+use futures::future::join_all;
 use inquire::{MultiSelect, Select, Text};
+use itertools::{Itertools, process_results};
 use log::{debug, error, info};
 
 use crate::anki_connect::AnkiConnectClient;
@@ -25,16 +28,17 @@ mod util;
 #[derive(Parser, Debug)]
 struct Args {
     #[command(subcommand)]
-    command: Commands
+    command: Commands,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
     ProcessWord { word: String },
-    ProcessAll { force: Option<bool> }
+    ProcessAll { force: Option<bool> },
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
     let args = Args::parse();
@@ -45,18 +49,21 @@ fn main() -> Result<()> {
 
             let mut word = Word::from_text(word);
 
-            WordProcessor::new()?
-                .process_word(&mut word)?;
+            let result = WordProcessor::new().await?
+                .process_word(&mut word).await;
 
-            info!("Definition: {:?}", word);
-        },
+            match result {
+                Ok(word) => info!("Definition: {:?}", word),
+                Err(err) => error!("Error: {err}")
+            }
+        }
 
         Commands::ProcessAll { force } => {
             debug!("Processing all words");
 
-            let word_processor = WordProcessor::new()?;
+            let word_processor = WordProcessor::new().await?;
 
-            match word_processor.process(force.unwrap_or(false)) {
+            match word_processor.process(force.unwrap_or(false)).await {
                 Ok(_) => debug!("Finished."),
                 Err(err) => error!("Global error: {}", err)
             }
@@ -70,80 +77,85 @@ struct WordProcessor {
     readwise: ReadwiseClient,
     oxford_dict: OxfordDictClient,
     google_translate: GoogleTranslate,
-    anki: AnkiConnectClient
+    anki: AnkiConnectClient,
 }
 
 impl WordProcessor {
-    pub fn new() -> Result<WordProcessor> {
+    pub async fn new() -> Result<WordProcessor> {
+        let (readwise, oxford_dict, google_translate) = try_join!(
+            ReadwiseClient::new(),
+            OxfordDictClient::new(),
+            GoogleTranslate::new()
+        )?;
+
         Ok(WordProcessor {
-            readwise: ReadwiseClient::new()?,
-            oxford_dict: OxfordDictClient::new()?,
-            google_translate: GoogleTranslate::new()?,
-            anki: AnkiConnectClient::new()?
+            readwise,
+            oxford_dict,
+            google_translate,
+            anki: AnkiConnectClient::new()?,
         })
     }
 
-    pub fn process(&self, force: bool) -> Result<()> {
-        let mut books = self.readwise.get_books()?;
+    pub async fn process(&self, force: bool) -> Result<()> {
+        let mut books = self.readwise.get_books().await?;
         books.sort();
-
         let book = Self::select_book(books)?;
-        let mut words = self.readwise.get_words(&book)?;
-        let mut processed_words: Vec<Word> = Vec::new();
 
-        if !force {
-            let mut cached_translations = db::get_words(&book)?;
+        let all_words = self.readwise.get_words(&book).await?;
+        let processed_words = self.process_words_v2(&book, all_words, force).await?;
 
-            let words_count = words.len();
-            words = words.into_iter()
-                .filter(|word| !cached_translations.iter().any(|cached_word| cached_word.original_text == word.original_text))
-                .collect();
+        db::save_words(&book.title, &processed_words).await?;
 
-            processed_words.append(& mut cached_translations);
-
-            info!("{} are already processed, processing {} others", words_count - words.len() ,words.len());
-        }
-
-        let mut count = 0;
-        while !words.is_empty() {
-            let mut failed_words: Vec<Word> = Vec::new();
-
-            for mut word in words {
-                let processed_word = self.process_word(&mut word);
-
-                match processed_word {
-                    Ok(()) => processed_words.push(word),
-                    Err(err) => {
-                        error!("Failed to process '{word}': {err}");
-                        failed_words.push(word);
-                    }
-                }
-                if count % 10 == 0 {
-                    debug!("Processed {count} words");
-                }
-                count += 1;
-            }
-
-            if !failed_words.is_empty() {
-                words = Self::redact_words(failed_words)?;
-            } else {
-                break
-            }
-        }
-
-        db::save_words(&book.title, &processed_words)?;
-
-        self.anki.store_book(&book, &processed_words)?;
+        self.anki.store_book(&book, &processed_words, force).await?;
 
         Ok(())
     }
 
-    pub fn process_word(&self, word: &mut Word) -> Result<()> {
-        let word_stem = self.oxford_dict.word_stem(&word.text)
+    async fn process_words_v2(&self, book: &Book, all_words: Vec<Word>, force: bool) -> Result<Vec<Word>> {
+        let (mut unprocessed_words, mut processed_words) = if !force {
+            Self::partition_by_processed(&book, all_words).await?
+        } else {
+            (all_words, Vec::new())
+        };
+
+        let mut count = 0;
+        while !unprocessed_words.is_empty() {
+            let mut failed_words: Vec<Word> = Vec::new();
+
+            for mut word in unprocessed_words {
+                let result = self.process_word(&mut word).await;
+
+                match result {
+                    Ok(()) => processed_words.push(word),
+                    Err(err) => {
+                        error!("Failed to process word '{word}': {err}");
+                        failed_words.push(word);
+                    }
+                };
+
+                count += 1;
+                if count % 10 == 0 {
+                    info!("Processed {count} words");
+                }
+            }
+
+            if !failed_words.is_empty() {
+                unprocessed_words = Self::redact_words(failed_words)?;
+            } else {
+                break;
+            }
+        }
+
+        Ok(processed_words)
+    }
+
+    pub async fn process_word(&self, word: &mut Word) -> Result<()> {
+        let word_stem = self.oxford_dict.word_stem(&word.text).await
             .unwrap_or(word.text.to_owned());
 
-        let translation = self.google_translate.translate(&word_stem)?;
-        let defined_word = self.oxford_dict.definitions(&word_stem)?;
+        let (translation, defined_word) = try_join!(
+            self.google_translate.translate(&word_stem),
+            self.oxford_dict.definitions(&word_stem))?;
 
         word.text = defined_word.text;
         word.translation = Some(translation);
@@ -159,26 +171,41 @@ impl WordProcessor {
     }
 
     fn redact_words(words: Vec<Word>) -> Result<Vec<Word>> {
-        impl Display for Word {
-            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{}", self.text)
-            }
-        }
-
-        let words_to_redact = MultiSelect::new("Select words to redact: ", words)
+        let selected = MultiSelect::new("Select words to redact: ", words)
             .prompt()?;
 
         let mut new_words = Vec::new();
-        for mut word in words_to_redact {
+        for mut word in selected {
             let redacted_text = Text::new("Redact: ")
                 .with_initial_value(&word.text)
                 .prompt()?;
 
             word.text = redacted_text;
+            word.translation = None;
+            word.definitions = None;
 
             new_words.push(word);
         }
 
         Ok(new_words)
+    }
+
+    async fn partition_by_processed<'a>(book: &Book, words: Vec<Word>) -> Result<(Vec<Word>, Vec<Word>)> {
+        let mut cached_words = db::get_words(book).await?
+            .into_iter()
+            .map(|word| (word.original_text.clone(), word))
+            .collect::<HashMap<String, Word>>();
+
+        let (mut processed, mut unprocessed) = (Vec::new(), Vec::new());
+
+        for word in words.into_iter() {
+            if let Some(cached_word) = cached_words.remove(&word.original_text) {
+                processed.push(cached_word);
+            } else {
+                unprocessed.push(word);
+            }
+        }
+
+        Ok((unprocessed, processed))
     }
 }

@@ -3,6 +3,7 @@ use std::{thread, time};
 
 use anyhow::{anyhow, Context, Result};
 use itertools::Itertools;
+use log::info;
 use reqwest::header::HeaderValue;
 use reqwest::{header, StatusCode};
 use serde::de::DeserializeOwned;
@@ -11,7 +12,7 @@ use crate::{model, util};
 use crate::model::Word;
 
 pub struct ReadwiseClient {
-    http: reqwest::blocking::Client,
+    http: reqwest::Client,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,15 +47,15 @@ struct Credentials {
 const URL: &str = "https://readwise.io/api/v2";
 
 impl ReadwiseClient {
-    pub fn new() -> Result<ReadwiseClient> {
-        let token = Self::load_creds()?.token;
+    pub async fn new() -> Result<ReadwiseClient> {
+        let token = Self::load_creds().await?.token;
 
         let mut default_headers = header::HeaderMap::new();
         default_headers.insert("Accept", HeaderValue::from_str("application/json")?);
         default_headers.insert("Content-Type", HeaderValue::from_str("application/json")?);
         default_headers.insert("Authorization", HeaderValue::from_str(&format!("Token {token}"))?);
 
-        let http = reqwest::blocking::Client::builder()
+        let http = reqwest::Client::builder()
             .default_headers(default_headers)
             .connection_verbose(true)
             .build()?;
@@ -62,17 +63,17 @@ impl ReadwiseClient {
         Ok(ReadwiseClient { http })
     }
 
-    fn load_creds() -> Result<Credentials> {
-        util::load_json_config("readwise")
+    async fn load_creds() -> Result<Credentials> {
+        util::load_json_config("readwise").await
             .with_context(|| "Failed to load JSON config for 'readwise'")
     }
 
-    pub fn get_words(&self, book: &model::Book) -> Result<Vec<Word>> {
+    pub async fn get_words(&self, book: &model::Book) -> Result<Vec<Word>> {
         let pink_tag =
             |highlight: &BookHighlight| highlight.tags.iter().any(|tag| tag.name == "pink");
 
         Ok(self
-            .get_highlights(book.id)?
+            .get_highlights(book.id).await?
             .into_iter()
             .filter(pink_tag)
             .map(|highlight| highlight.text)
@@ -88,20 +89,21 @@ impl ReadwiseClient {
         regex.replace_all(&word, "").to_string()
     }
 
-    pub fn get_books(&self) -> Result<Vec<model::Book>> {
-        Ok(self.get_list_data::<Book>("/books", &HashMap::new())?
+    pub async fn get_books(&self) -> Result<Vec<model::Book>> {
+        Ok(self.get_list_data::<Book>("/books", &HashMap::new())
+            .await?
             .into_iter()
-            .map(|book| model::Book { id: book.id, author: book.author, title: book.title, words: Vec::new() })
+            .map(|book| model::Book { id: book.id, author: book.author, title: book.title })
             .collect())
     }
 
-    fn get_highlights(&self, book_id: u64) -> Result<Vec<BookHighlight>> {
+    async fn get_highlights(&self, book_id: u64) -> Result<Vec<BookHighlight>> {
         let book_id_str = format!("{book_id}");
         let params = &HashMap::from([("book_id", book_id_str.as_str())]);
-        self.get_list_data("/highlights", params)
+        self.get_list_data("/highlights", params).await
     }
 
-    fn get_list_data<T: DeserializeOwned>(
+    async fn get_list_data<T: DeserializeOwned>(
         &self,
         path: &str,
         params: &HashMap<&str, &str>,
@@ -115,7 +117,7 @@ impl ReadwiseClient {
             params.insert("page", &page_str);
             params.insert("page_size", "1000");
 
-            let mut response: ListResponse<T> = self.make_request(path, &params)?;
+            let mut response: ListResponse<T> = self.make_request(path, &params).await?;
             page += 1;
             results.append(&mut response.results);
 
@@ -126,26 +128,28 @@ impl ReadwiseClient {
         }
     }
 
-    fn make_request<T: DeserializeOwned>(
+    async fn make_request<T: DeserializeOwned>(
         &self,
         path: &str,
         params: &HashMap<&str, &str>,
     ) -> Result<T> {
         for _ in 1..=3 {
-            let request = self.http.get(&format!("{URL}{path}")).query(params);
+            let url = format!("{URL}{path}");
+            info!("Requesting {url}");
 
-            let response = request.send()?;
+            let request = self.http.get(&url).query(params);
+
+            let response = request.send().await?;
 
             if response.status() != StatusCode::TOO_MANY_REQUESTS {
-                let result = response.json::<T>()?;
-                return Ok(result);
+                return Ok(response.json().await?);
             } else {
                 let retry_after: u64 = response
                     .headers()
                     .get("Retry-After").ok_or(anyhow!("Tried to get Retry-After, but no header available"))?
                     .to_str()?
                     .parse::<u64>()?;
-                thread::sleep(time::Duration::from_millis(retry_after));
+                tokio::time::sleep(time::Duration::from_secs(retry_after)).await;
             }
         }
         panic!("Failed to get response from readwise in time");

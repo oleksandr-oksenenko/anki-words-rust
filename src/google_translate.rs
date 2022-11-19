@@ -1,16 +1,17 @@
-use serde::{Serialize, Deserialize};
-
 use anyhow::{anyhow, Context};
 use anyhow::Result;
-use crate::google_auth::TokenManager;
+use log::info;
 use reqwest::header;
 use reqwest::header::HeaderValue;
+use serde::{Deserialize, Serialize};
+
+use crate::google_auth::TokenManager;
 
 const ENDPOINT: &str = "https://translation.googleapis.com/language/translate/v2";
 const SCOPE: &str = "https://www.googleapis.com/auth/cloud-translation";
 
 pub struct GoogleTranslate {
-    http: reqwest::blocking::Client,
+    http: reqwest::Client,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -49,19 +50,18 @@ impl Request {
 }
 
 impl GoogleTranslate {
-    pub fn new() -> Result<GoogleTranslate> {
+    pub async fn new() -> Result<GoogleTranslate> {
         let scopes = [SCOPE];
-        let token_manager = TokenManager::new(&scopes);
-        let token = token_manager
+        let token = TokenManager::new(&scopes).await
             .with_context(|| "Failed to create Google Token Manager")?
-            .token()?;
+            .token().await?;
 
         let mut default_headers = header::HeaderMap::new();
         default_headers.insert("Accept", HeaderValue::from_str("application/json")?);
         default_headers.insert("Content-Type", HeaderValue::from_str("application/json")?);
         default_headers.insert("Authorization", HeaderValue::from_str(&token)?);
 
-        let http = reqwest::blocking::Client::builder()
+        let http = reqwest::Client::builder()
             .default_headers(default_headers)
             .connection_verbose(true)
             .build()?;
@@ -69,14 +69,16 @@ impl GoogleTranslate {
         Ok(GoogleTranslate { http })
     }
 
-    pub fn translate(&self, query: &str) -> Result<String> {
+    pub async fn translate(&self, query: &str) -> Result<String> {
         let request = Request::new(query);
         let body = serde_json::to_string(&request)?;
 
+        info!("Google translate query: '{query}'");
+
         let response: Response = self.http.post(ENDPOINT)
             .body(body)
-            .send()?
-            .json()?;
+            .send().await?
+            .json().await?;
 
         let translation = response.data.translations.into_iter().next();
         translation.map(|t| t.translated_text)

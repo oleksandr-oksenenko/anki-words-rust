@@ -1,2 +1,3 @@
-* Handle Oxford Dict registers and other additional fields
-* Asyncify
+* Handle Oxford Dict registers, pronunciations and other additional fields
+* Dedup errors
+* Handle sentences
